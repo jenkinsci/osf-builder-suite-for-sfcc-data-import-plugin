@@ -1,0 +1,85 @@
+<?jelly escape-by-default='true'?>
+<j:jelly
+    xmlns:j="jelly:core"
+    xmlns:st="jelly:stapler"
+    xmlns:d="jelly:define"
+    xmlns:l="/lib/layout"
+    xmlns:t="/lib/hudson"
+    xmlns:f="/lib/form"
+    xmlns:c="/lib/credentials">
+
+    <f:entry
+        title="Instance Hostname"
+        field="hostname"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-hostname.html">
+
+        <f:textbox clazz="required"/>
+    </f:entry>
+
+    <f:entry
+        title="Business Manager Credentials"
+        field="bmCredentialsId"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-bmCredentialsId.html">
+
+        <c:select />
+    </f:entry>
+
+    <f:entry
+        title="Two Factor Auth Credentials"
+        field="tfCredentialsId"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-tfCredentialsId.html">
+
+        <c:select />
+    </f:entry>
+
+    <f:entry
+        title="Open Commerce API Credentials"
+        field="ocCredentialsId"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-ocCredentialsId.html">
+
+        <c:select />
+    </f:entry>
+
+    <f:entry
+        title="Open Commerce API Version"
+        field="ocVersion"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-ocVersion.html">
+
+        <f:textbox clazz="required" />
+    </f:entry>
+
+    <f:entry
+        title="Archive Name"
+        field="archiveName"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-archiveName.html">
+
+        <f:textbox clazz="required" />
+    </f:entry>
+
+    <f:entry
+        title="Source Path"
+        field="sourcePath"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-sourcePath.html">
+
+        <f:textbox />
+    </f:entry>
+
+    <f:entry
+        title="Exclude Patterns"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-excludePatterns.html">
+
+        <f:repeatableProperty field="excludePatterns">
+            <div align="right">
+                <f:repeatableDeleteButton />
+            </div>
+        </f:repeatableProperty>
+    </f:entry>
+
+    <f:entry
+        title="Temp Directory"
+        field="tempDirectory"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-tempDirectory.html">
+
+        <f:textbox clazz="required" />
+    </f:entry>
+</j:jelly>
