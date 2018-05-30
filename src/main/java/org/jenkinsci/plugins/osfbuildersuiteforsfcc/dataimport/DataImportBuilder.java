@@ -19,6 +19,7 @@ import hudson.util.ListBoxModel;
 import jenkins.MasterToSlaveFileCallable;
 import jenkins.tasks.SimpleBuildStep;
 import net.sf.json.JSONObject;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.RandomStringUtils;
@@ -56,6 +57,7 @@ import org.jenkinsci.Symbol;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.OpenCommerceAPICredentials;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.TwoFactorAuthCredentials;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.BusinessManagerAuthCredentials;
+import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.model.DataImportAction;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.repeatable.ExcludePattern;
 import org.jenkinsci.plugins.tokenmacro.MacroEvaluationException;
 import org.jenkinsci.plugins.tokenmacro.TokenMacro;
@@ -288,7 +290,16 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             throw abortException;
         }
 
-        workspace.act(new DataImportCallable(
+        String previousDataZipSha1Hash = null;
+        Run<?, ?> previousBuild = build.getPreviousBuild();
+        if (previousBuild != null) {
+            DataImportAction previousDataImportAction = previousBuild.getAction(DataImportAction.class);
+            if (previousDataImportAction != null) {
+                previousDataZipSha1Hash = previousDataImportAction.getSha1Hash();
+            }
+        }
+
+        String currentDataZipSha1Hash = workspace.act(new DataImportCallable(
                 workspace,
                 listener,
                 expandedHostname,
@@ -307,8 +318,12 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 getDescriptor().getHttpProxyPort(),
                 getDescriptor().getHttpProxyUsername(),
                 getDescriptor().getHttpProxyPassword(),
-                getDescriptor().getDisableSSLValidation()
+                getDescriptor().getDisableSSLValidation(),
+                previousDataZipSha1Hash
         ));
+
+        DataImportAction currentDataImportAction = new DataImportAction(currentDataZipSha1Hash);
+        build.addAction(currentDataImportAction);
 
         logger.println();
         logger.println(String.format("--[E: %s]--", getDescriptor().getDisplayName()));
@@ -465,7 +480,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         }
     }
 
-    private static class DataImportCallable extends MasterToSlaveFileCallable<Void> {
+    private static class DataImportCallable extends MasterToSlaveFileCallable<String> {
 
         private static final long serialVersionUID = 1L;
 
@@ -488,6 +503,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         private final String httpProxyUsername;
         private final String httpProxyPassword;
         private final Boolean disableSSLValidation;
+        private final String previousDataZipSha1Hash;
 
         @SuppressWarnings("WeakerAccess")
         public DataImportCallable(
@@ -509,7 +525,8 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 String httpProxyPort,
                 String httpProxyUsername,
                 String httpProxyPassword,
-                Boolean disableSSLValidation) {
+                Boolean disableSSLValidation,
+                String previousDataZipSha1Hash) {
 
             this.workspace = workspace;
             this.listener = listener;
@@ -530,11 +547,12 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             this.httpProxyUsername = httpProxyUsername;
             this.httpProxyPassword = httpProxyPassword;
             this.disableSSLValidation = disableSSLValidation;
+            this.previousDataZipSha1Hash = previousDataZipSha1Hash;
         }
 
         @SuppressWarnings("ConstantConditions")
         @Override
-        public Void invoke(File dir, VirtualChannel channel) throws IOException, InterruptedException {
+        public String invoke(File dir, VirtualChannel channel) throws IOException, InterruptedException {
             PrintStream logger = listener.getLogger();
 
             if (StringUtils.isEmpty(hostname)) {
@@ -758,6 +776,24 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
             logger.println(" + Ok");
             /* Creating ZIP archive of data to be imported */
+
+
+            /* Checking if data import is needed */
+            logger.println();
+            logger.println("[+] Checking if data import is needed");
+
+            String currentDataZipSha1Hash = new DigestUtils(DigestUtils.getSha1Digest()).digestAsHex(dataZip);
+            if (StringUtils.equals(currentDataZipSha1Hash, previousDataZipSha1Hash)) {
+                logger.println(
+                        " + Ok (data has not been changed since previous build; skipping the import this time)"
+                );
+                return currentDataZipSha1Hash;
+            } else {
+                logger.println(
+                        " + Ok (proceeding with the import)"
+                );
+            }
+            /* Checking if data import is needed */
 
 
             /* Setup HTTP Client */
@@ -1826,7 +1862,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             /* Close HTTP Client */
 
 
-            return null;
+            return currentDataZipSha1Hash;
         }
     }
 }
