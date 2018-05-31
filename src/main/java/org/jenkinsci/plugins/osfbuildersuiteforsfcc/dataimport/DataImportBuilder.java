@@ -5,10 +5,7 @@ import com.cloudbees.plugins.credentials.common.StandardCredentials;
 import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
 import com.cloudbees.plugins.credentials.domains.URIRequirementBuilder;
 import com.google.gson.*;
-import hudson.AbortException;
-import hudson.Launcher;
-import hudson.Extension;
-import hudson.FilePath;
+import hudson.*;
 import hudson.model.*;
 import hudson.model.queue.Tasks;
 import hudson.remoting.VirtualChannel;
@@ -19,6 +16,7 @@ import hudson.util.ListBoxModel;
 import jenkins.MasterToSlaveFileCallable;
 import jenkins.tasks.SimpleBuildStep;
 import net.sf.json.JSONObject;
+import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -62,6 +60,8 @@ import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.repeatable.Exclud
 import org.jenkinsci.plugins.tokenmacro.MacroEvaluationException;
 import org.jenkinsci.plugins.tokenmacro.TokenMacro;
 import org.kohsuke.stapler.*;
+import org.zeroturnaround.zip.ZipEntryCallback;
+import org.zeroturnaround.zip.ZipInfoCallback;
 import org.zeroturnaround.zip.ZipUtil;
 
 import javax.annotation.Nonnull;
@@ -83,6 +83,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
 
 
 @SuppressWarnings("unused")
@@ -290,16 +291,15 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             throw abortException;
         }
 
-        String previousDataZipSha1Hash = null;
+        List<String> previousDataFingerprints = new ArrayList<>();
         Run<?, ?> previousBuild = build.getPreviousBuild();
         if (previousBuild != null) {
-            DataImportAction previousDataImportAction = previousBuild.getAction(DataImportAction.class);
-            if (previousDataImportAction != null) {
-                previousDataZipSha1Hash = previousDataImportAction.getSha1Hash();
-            }
+            previousBuild.getActions(DataImportAction.class).forEach((dataImportAction) -> {
+                previousDataFingerprints.add(dataImportAction.getDataFingerprint());
+            });
         }
 
-        String currentDataZipSha1Hash = workspace.act(new DataImportCallable(
+        String currentDataFingerprint = workspace.act(new DataImportCallable(
                 workspace,
                 listener,
                 expandedHostname,
@@ -319,10 +319,10 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 getDescriptor().getHttpProxyUsername(),
                 getDescriptor().getHttpProxyPassword(),
                 getDescriptor().getDisableSSLValidation(),
-                previousDataZipSha1Hash
+                previousDataFingerprints
         ));
 
-        DataImportAction currentDataImportAction = new DataImportAction(currentDataZipSha1Hash);
+        DataImportAction currentDataImportAction = new DataImportAction(currentDataFingerprint);
         build.addAction(currentDataImportAction);
 
         logger.println();
@@ -503,7 +503,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         private final String httpProxyUsername;
         private final String httpProxyPassword;
         private final Boolean disableSSLValidation;
-        private final String previousDataZipSha1Hash;
+        private final List<String> previousDataFingerprints;
 
         @SuppressWarnings("WeakerAccess")
         public DataImportCallable(
@@ -526,7 +526,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 String httpProxyUsername,
                 String httpProxyPassword,
                 Boolean disableSSLValidation,
-                String previousDataZipSha1Hash) {
+                List<String> previousDataFingerprints) {
 
             this.workspace = workspace;
             this.listener = listener;
@@ -547,7 +547,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             this.httpProxyUsername = httpProxyUsername;
             this.httpProxyPassword = httpProxyPassword;
             this.disableSSLValidation = disableSSLValidation;
-            this.previousDataZipSha1Hash = previousDataZipSha1Hash;
+            this.previousDataFingerprints = previousDataFingerprints;
         }
 
         @SuppressWarnings("ConstantConditions")
@@ -782,12 +782,22 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println("[+] Checking if data import is needed");
 
-            String currentDataZipSha1Hash = new DigestUtils(DigestUtils.getSha1Digest()).digestAsHex(dataZip);
-            if (StringUtils.equals(currentDataZipSha1Hash, previousDataZipSha1Hash)) {
+            MessageDigest sha1Digest = DigestUtils.getSha1Digest();
+            ZipUtil.iterate(dataZip, (in, zipEntry) -> {
+                if (!zipEntry.isDirectory()) {
+                    DigestUtils.updateDigest(sha1Digest, in);
+                }
+            });
+
+            String currentDataZipSha1Hash = Hex.encodeHexString(sha1Digest.digest());
+            String currentDataFingerprint = String.format("%s:%s", currentDataZipSha1Hash, sourcePath);
+
+            if (previousDataFingerprints.contains(currentDataFingerprint)) {
                 logger.println(
                         " + Ok (data has not been changed since previous build; skipping the import this time)"
                 );
-                return currentDataZipSha1Hash;
+
+                return currentDataFingerprint;
             } else {
                 logger.println(
                         " + Ok (proceeding with the import)"
@@ -1862,7 +1872,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             /* Close HTTP Client */
 
 
-            return currentDataZipSha1Hash;
+            return currentDataFingerprint;
         }
     }
 }
