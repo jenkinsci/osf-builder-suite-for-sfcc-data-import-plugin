@@ -56,12 +56,11 @@ import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.OpenCommerceAPIC
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.TwoFactorAuthCredentials;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.BusinessManagerAuthCredentials;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.model.DataImportAction;
+import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.model.DataImportEnvAction;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.repeatable.ExcludePattern;
 import org.jenkinsci.plugins.tokenmacro.MacroEvaluationException;
 import org.jenkinsci.plugins.tokenmacro.TokenMacro;
 import org.kohsuke.stapler.*;
-import org.zeroturnaround.zip.ZipEntryCallback;
-import org.zeroturnaround.zip.ZipInfoCallback;
 import org.zeroturnaround.zip.ZipUtil;
 
 import javax.annotation.Nonnull;
@@ -83,7 +82,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
 
 
 @SuppressWarnings("unused")
@@ -299,7 +297,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             });
         }
 
-        String currentDataFingerprint = workspace.act(new DataImportCallable(
+        DataImportResult dataImportResult = workspace.act(new DataImportCallable(
                 workspace,
                 listener,
                 expandedHostname,
@@ -322,8 +320,13 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 previousDataFingerprints
         ));
 
-        DataImportAction currentDataImportAction = new DataImportAction(currentDataFingerprint);
+        DataImportAction currentDataImportAction = new DataImportAction(dataImportResult.getFingerprint());
         build.addAction(currentDataImportAction);
+
+        DataImportEnvAction dataImportEnvAction = new DataImportEnvAction(
+                build.getActions(DataImportEnvAction.class).size(), dataImportResult.getStatus()
+        );
+        build.addAction(dataImportEnvAction);
 
         logger.println();
         logger.println(String.format("--[E: %s]--", getDescriptor().getDisplayName()));
@@ -480,7 +483,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         }
     }
 
-    private static class DataImportCallable extends MasterToSlaveFileCallable<String> {
+    private static class DataImportCallable extends MasterToSlaveFileCallable<DataImportResult> {
 
         private static final long serialVersionUID = 1L;
 
@@ -552,7 +555,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
         @SuppressWarnings("ConstantConditions")
         @Override
-        public String invoke(File dir, VirtualChannel channel) throws IOException, InterruptedException {
+        public DataImportResult invoke(File dir, VirtualChannel channel) throws IOException, InterruptedException {
             PrintStream logger = listener.getLogger();
 
             if (StringUtils.isEmpty(hostname)) {
@@ -797,7 +800,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                         " + Ok (data has not been changed since previous build; skipping the import this time)"
                 );
 
-                return currentDataFingerprint;
+                return new DataImportResult(currentDataFingerprint, "SKIPPED");
             } else {
                 logger.println(
                         " + Ok (proceeding with the import)"
@@ -1872,7 +1875,30 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             /* Close HTTP Client */
 
 
-            return currentDataFingerprint;
+            return new DataImportResult(currentDataFingerprint, "IMPORTED");
         }
+    }
+
+    private static class DataImportResult implements Serializable {
+        private final String fingerprint;
+        private final String status;
+
+        @SuppressWarnings("WeakerAccess")
+        public DataImportResult(String fingerprint, String status) {
+            this.fingerprint = fingerprint;
+            this.status = status;
+        }
+
+        @SuppressWarnings("WeakerAccess")
+        public String getFingerprint() {
+            return fingerprint;
+        }
+
+        @SuppressWarnings("WeakerAccess")
+        public String getStatus() {
+            return status;
+        }
+
+        private static final long serialVersionUID = 1L;
     }
 }
