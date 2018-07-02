@@ -800,6 +800,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             }
 
             List<String> currentDataFingerprints = new ArrayList<>();
+            List<String> currentDataZipFiles = new ArrayList<>();
 
             ZipUtil.pack(dataSrc, dataZip, (path) -> {
                 Boolean excludeFile = excludePatternsList.stream().anyMatch(
@@ -827,6 +828,8 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                                 return null;
                             }
                         }
+
+                        currentDataZipFiles.add(path);
                     } catch (IOException ignored) {
 
                     }
@@ -843,10 +846,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println("[+] Checking if data import is needed");
 
-            List<String> dataZipFiles = new ArrayList<>();
-            ZipUtil.iterate(dataZip, (zipEntry) -> dataZipFiles.add(zipEntry.getName()));
-
-            if (dataZipFiles.isEmpty()) {
+            if (currentDataZipFiles.isEmpty()) {
                 if (StringUtils.equals(importStrategy, "DELTA")) {
                     logger.println(
                             " + Ok (data has not been changed since previous build so we'll skip the import this time)"
@@ -860,7 +860,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 return new DataImportResult(currentDataFingerprints, "SKIPPED");
             } else {
                 if (StringUtils.equals(importStrategy, "DELTA")) {
-                    dataZipFiles.forEach((dataZipFile) -> logger.println(String.format(" - %s", dataZipFile)));
+                    currentDataZipFiles.forEach((dataZipFile) -> logger.println(String.format(" - %s", dataZipFile)));
                     logger.println(
                             " + Ok (proceeding with DELTA import)"
                     );
