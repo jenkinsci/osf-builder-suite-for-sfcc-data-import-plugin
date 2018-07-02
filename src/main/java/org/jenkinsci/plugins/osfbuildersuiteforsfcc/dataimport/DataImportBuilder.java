@@ -67,8 +67,7 @@ import javax.annotation.Nonnull;
 import javax.net.ssl.SSLContext;
 import java.io.*;
 import java.net.URLEncoder;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.*;
 import java.security.*;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateExpiredException;
@@ -95,6 +94,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
     private String archiveName;
     private String sourcePath;
     private List<ExcludePattern> excludePatterns;
+    private String importStrategy;
     private String tempDirectory;
 
     @DataBoundConstructor
@@ -107,6 +107,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             String archiveName,
             String sourcePath,
             List<ExcludePattern> excludePatterns,
+            String importStrategy,
             String tempDirectory) {
 
         this.hostname = hostname;
@@ -117,6 +118,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         this.archiveName = archiveName;
         this.sourcePath = sourcePath;
         this.excludePatterns = excludePatterns;
+        this.importStrategy = importStrategy;
         this.tempDirectory = tempDirectory;
     }
 
@@ -209,6 +211,17 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
     }
 
     @SuppressWarnings("unused")
+    public String getImportStrategy() {
+        return importStrategy;
+    }
+
+    @SuppressWarnings("unused")
+    @DataBoundSetter
+    public void setImportStrategy(String importStrategy) {
+        this.importStrategy = importStrategy;
+    }
+
+    @SuppressWarnings("unused")
     public String getTempDirectory() {
         return tempDirectory;
     }
@@ -292,9 +305,9 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         List<String> previousDataFingerprints = new ArrayList<>();
         Run<?, ?> previousBuild = build.getPreviousBuild();
         if (previousBuild != null) {
-            previousBuild.getActions(DataImportAction.class).forEach((dataImportAction) -> {
-                previousDataFingerprints.add(dataImportAction.getDataFingerprint());
-            });
+            previousBuild.getActions(DataImportAction.class).forEach(
+                    (dataImportAction) -> previousDataFingerprints.addAll(dataImportAction.getDataFingerprints())
+            );
         }
 
         DataImportResult dataImportResult = workspace.act(new DataImportCallable(
@@ -311,6 +324,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 expandedArchiveName,
                 sourcePath,
                 excludePatterns,
+                importStrategy,
                 tempDirectory,
                 getDescriptor().getHttpProxyHost(),
                 getDescriptor().getHttpProxyPort(),
@@ -320,13 +334,11 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 previousDataFingerprints
         ));
 
-        DataImportAction currentDataImportAction = new DataImportAction(dataImportResult.getFingerprint());
-        build.addAction(currentDataImportAction);
-
-        DataImportEnvAction dataImportEnvAction = new DataImportEnvAction(
-                build.getActions(DataImportEnvAction.class).size(), dataImportResult.getStatus()
-        );
-        build.addAction(dataImportEnvAction);
+        build.addAction(new DataImportAction(dataImportResult.getDataFingerprints()));
+        build.addAction(new DataImportEnvAction(
+                build.getActions(DataImportEnvAction.class).size(),
+                dataImportResult.getStatus()
+        ));
 
         logger.println();
         logger.println(String.format("--[E: %s]--", getDescriptor().getDisplayName()));
@@ -355,7 +367,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             return "OSF Builder Suite For Salesforce Commerce Cloud :: Data Import";
         }
 
-        public boolean isApplicable(Class<? extends AbstractProject> aClass) {
+        public boolean isApplicable(Class<? extends AbstractProject> jobType) {
             return true;
         }
 
@@ -416,6 +428,17 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                     StandardCredentials.class,
                     URIRequirementBuilder.create().build(),
                     CredentialsMatchers.instanceOf(OpenCommerceAPICredentials.class)
+            );
+        }
+
+        @SuppressWarnings("unused")
+        public ListBoxModel doFillImportStrategyItems(
+                @AncestorInPath Item context,
+                @QueryParameter String credentialsId) {
+
+            return new ListBoxModel(
+                    new ListBoxModel.Option("Full", "FULL"),
+                    new ListBoxModel.Option("Delta", "DELTA")
             );
         }
 
@@ -500,6 +523,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         private final String archiveName;
         private final String sourcePath;
         private final List<ExcludePattern> excludePatterns;
+        private final String importStrategy;
         private final String tempDirectory;
         private final String httpProxyHost;
         private final String httpProxyPort;
@@ -523,6 +547,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 String archiveName,
                 String sourcePath,
                 List<ExcludePattern> excludePatterns,
+                String importStrategy,
                 String tempDirectory,
                 String httpProxyHost,
                 String httpProxyPort,
@@ -544,6 +569,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             this.archiveName = archiveName;
             this.sourcePath = sourcePath;
             this.excludePatterns = excludePatterns;
+            this.importStrategy = importStrategy;
             this.tempDirectory = tempDirectory;
             this.httpProxyHost = httpProxyHost;
             this.httpProxyPort = httpProxyPort;
@@ -746,6 +772,14 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 );
             }
 
+            if (!dataSrc.isDirectory()) {
+                logger.println();
+                throw new AbortException(
+                        "Invalid value for \"Source Path\"!" + " " +
+                                String.format("\"%s\" is not a directory!", sourcePath)
+                );
+            }
+
             File dataZip = new File(tDirectory, String.format("%s.zip", archiveName));
             if (dataZip.exists()) {
                 logger.println();
@@ -765,6 +799,8 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 );
             }
 
+            List<String> currentDataFingerprints = new ArrayList<>();
+
             ZipUtil.pack(dataSrc, dataZip, (path) -> {
                 Boolean excludeFile = excludePatternsList.stream().anyMatch(
                         (pattern) -> pattern.matchPath(File.separator + path, true)
@@ -772,6 +808,28 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
                 if (excludeFile) {
                     return null;
+                }
+
+                File currentFile = new File(dataSrc, path);
+                if (!currentFile.isDirectory()) {
+                    try (InputStream inputStream = new FileInputStream(currentFile)) {
+                        String dataFingerprint = String.format(
+                                "%s:%s:%s",
+                                DigestUtils.sha1Hex(inputStream),
+                                dataSrc.getName(),
+                                path
+                        );
+
+                        currentDataFingerprints.add(dataFingerprint);
+
+                        if (StringUtils.equals(importStrategy, "DELTA")) {
+                            if (previousDataFingerprints.contains(dataFingerprint)) {
+                                return null;
+                            }
+                        }
+                    } catch (IOException ignored) {
+
+                    }
                 }
 
                 return archiveName + "/" + path;
@@ -785,26 +843,32 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println("[+] Checking if data import is needed");
 
-            MessageDigest sha1Digest = DigestUtils.getSha1Digest();
-            ZipUtil.iterate(dataZip, (in, zipEntry) -> {
-                if (!zipEntry.isDirectory()) {
-                    DigestUtils.updateDigest(sha1Digest, in);
+            List<String> dataZipFiles = new ArrayList<>();
+            ZipUtil.iterate(dataZip, (zipEntry) -> dataZipFiles.add(zipEntry.getName()));
+
+            if (dataZipFiles.isEmpty()) {
+                if (StringUtils.equals(importStrategy, "DELTA")) {
+                    logger.println(
+                            " + Ok (data has not been changed since previous build so we'll skip the import this time)"
+                    );
+                } else {
+                    logger.println(
+                            " + Ok (nothing to import so we'll skip the import this time)"
+                    );
                 }
-            });
 
-            String currentDataZipSha1Hash = Hex.encodeHexString(sha1Digest.digest());
-            String currentDataFingerprint = String.format("%s:%s", currentDataZipSha1Hash, sourcePath);
-
-            if (previousDataFingerprints.contains(currentDataFingerprint)) {
-                logger.println(
-                        " + Ok (data has not been changed since previous build; skipping the import this time)"
-                );
-
-                return new DataImportResult(currentDataFingerprint, "SKIPPED");
+                return new DataImportResult(currentDataFingerprints, "SKIPPED");
             } else {
-                logger.println(
-                        " + Ok (proceeding with the import)"
-                );
+                if (StringUtils.equals(importStrategy, "DELTA")) {
+                    dataZipFiles.forEach((dataZipFile) -> logger.println(String.format(" - %s", dataZipFile)));
+                    logger.println(
+                            " + Ok (proceeding with DELTA import)"
+                    );
+                } else {
+                    logger.println(
+                            " + Ok (proceeding with FULL import)"
+                    );
+                }
             }
             /* Checking if data import is needed */
 
@@ -1875,23 +1939,23 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             /* Close HTTP Client */
 
 
-            return new DataImportResult(currentDataFingerprint, "IMPORTED");
+            return new DataImportResult(currentDataFingerprints, "IMPORTED");
         }
     }
 
     private static class DataImportResult implements Serializable {
-        private final String fingerprint;
+        private final List<String> dataFingerprints;
         private final String status;
 
         @SuppressWarnings("WeakerAccess")
-        public DataImportResult(String fingerprint, String status) {
-            this.fingerprint = fingerprint;
+        public DataImportResult(List<String> dataFingerprints, String status) {
+            this.dataFingerprints = dataFingerprints;
             this.status = status;
         }
 
         @SuppressWarnings("WeakerAccess")
-        public String getFingerprint() {
-            return fingerprint;
+        public List<String> getDataFingerprints() {
+            return dataFingerprints;
         }
 
         @SuppressWarnings("WeakerAccess")

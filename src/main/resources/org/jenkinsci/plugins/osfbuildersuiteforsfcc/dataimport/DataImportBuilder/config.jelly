@@ -76,6 +76,14 @@
     </f:entry>
 
     <f:entry
+        title="Import Strategy"
+        field="importStrategy"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-importStrategy.html">
+
+        <f:select />
+    </f:entry>
+
+    <f:entry
         title="Temp Directory"
         field="tempDirectory"
         help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-tempDirectory.html">
