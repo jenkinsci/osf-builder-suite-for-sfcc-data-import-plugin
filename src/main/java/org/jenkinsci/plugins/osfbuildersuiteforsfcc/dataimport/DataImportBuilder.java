@@ -305,9 +305,12 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         List<String> previousDataFingerprints = new ArrayList<>();
         Run<?, ?> previousBuild = build.getPreviousBuild();
         if (previousBuild != null) {
-            previousBuild.getActions(DataImportAction.class).forEach(
-                    (dataImportAction) -> previousDataFingerprints.addAll(dataImportAction.getDataFingerprints())
-            );
+            previousBuild.getActions(DataImportAction.class).forEach((dataImportAction) -> {
+                List<String> dataFingerprints = dataImportAction.getDataFingerprints();
+                if (dataFingerprints != null && !dataFingerprints.isEmpty()) {
+                    previousDataFingerprints.addAll(dataFingerprints);
+                }
+            });
         }
 
         DataImportResult dataImportResult = workspace.act(new DataImportCallable(
