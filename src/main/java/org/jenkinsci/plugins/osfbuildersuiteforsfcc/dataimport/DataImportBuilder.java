@@ -806,7 +806,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             List<String> currentDataZipFiles = new ArrayList<>();
 
             ZipUtil.pack(dataSrc, dataZip, (path) -> {
-                Boolean excludeFile = excludePatternsList.stream().anyMatch(
+                boolean excludeFile = excludePatternsList.stream().anyMatch(
                         (pattern) -> pattern.matchPath(File.separator + path, true)
                 );
 
@@ -961,21 +961,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             }
 
             httpClientBuilder.setDefaultCredentialsProvider(httpCredentialsProvider);
-
-            // WebDAV Auth
-            String bmAuthHeaderValue = String.format("Basic %s", Base64.getEncoder().encodeToString(String.format(
-                    "%s:%s",
-                    bmCredentials.getUsername(),
-                    bmCredentials.getPassword().getPlainText()
-            ).getBytes(Consts.UTF_8)));
-
-            // OCAPI Auth
-            String ocAuthHeaderValue = String.format("Basic %s", Base64.getEncoder().encodeToString(String.format(
-                    "%s:%s:%s",
-                    bmCredentials.getUsername(),
-                    bmCredentials.getPassword().getPlainText(),
-                    ocCredentials.getClientPassword()
-            ).getBytes(Consts.UTF_8)));
 
             SSLContextBuilder sslContextBuilder = SSLContexts.custom();
 
@@ -1286,54 +1271,19 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println("[+] Cleaning up leftover data from previous data import");
 
             for (String rmPath : Arrays.asList(archiveName, String.format("%s.zip", archiveName))) {
-                RequestBuilder rmRequestBuilder = RequestBuilder.create("DELETE");
-                rmRequestBuilder.setHeader("Authorization", bmAuthHeaderValue);
-                rmRequestBuilder.setUri(String.format(
-                        "https://%s/on/demandware.servlet/webdav/Sites/Impex/src/instance/%s",
-                        hostname, rmPath
-                ));
+                WebDAV.cleanupLeftoverData(
+                        OpenCommerceAPI.auth(
+                                httpClient,
+                                hostname,
+                                bmCredentials,
+                                ocCredentials
+                        ),
+                        httpClient,
+                        hostname,
+                        rmPath
+                );
 
-                CloseableHttpResponse rmHttpResponse;
-
-                try {
-                    rmHttpResponse = httpClient.execute(rmRequestBuilder.build());
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    rmHttpResponse.close();
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                StatusLine rmHttpStatusLine = rmHttpResponse.getStatusLine();
-
-                if (rmHttpStatusLine.getStatusCode() != HttpStatus.SC_NOT_FOUND) {
-                    if (rmHttpStatusLine.getStatusCode() == HttpStatus.SC_UNAUTHORIZED) {
-                        logger.println();
-                        throw new AbortException("Invalid username or password!");
-                    } else if (rmHttpStatusLine.getStatusCode() == HttpStatus.SC_NO_CONTENT) {
-                        logger.println(String.format(" - %s", rmPath));
-                    } else {
-                        logger.println();
-                        throw new AbortException(String.format(
-                                "%s - %s!", rmHttpStatusLine.getStatusCode(), rmHttpStatusLine.getReasonPhrase()
-                        ));
-                    }
-                }
+                logger.println(String.format(" - %s", rmPath));
             }
 
             logger.println(" + Ok");
@@ -1344,53 +1294,18 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println(String.format("[+] Uploading data (%s.zip)", archiveName));
 
-            RequestBuilder upRequestBuilder = RequestBuilder.create("PUT");
-            upRequestBuilder.setHeader("Authorization", bmAuthHeaderValue);
-            upRequestBuilder.setEntity(new FileEntity(dataZip, ContentType.APPLICATION_OCTET_STREAM));
-            upRequestBuilder.setUri(String.format(
-                    "https://%s/on/demandware.servlet/webdav/Sites/Impex/src/instance/%s.zip",
-                    hostname, archiveName
-            ));
-
-            CloseableHttpResponse upHttpResponse;
-
-            try {
-                upHttpResponse = httpClient.execute(upRequestBuilder.build());
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            try {
-                upHttpResponse.close();
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            StatusLine upHttpStatusLine = upHttpResponse.getStatusLine();
-
-            if (upHttpStatusLine.getStatusCode() != HttpStatus.SC_CREATED) {
-                if (upHttpStatusLine.getStatusCode() == HttpStatus.SC_UNAUTHORIZED) {
-                    logger.println();
-                    throw new AbortException("Invalid username or password!");
-                } else {
-                    logger.println();
-                    throw new AbortException(String.format(
-                            "%s - %s!", upHttpStatusLine.getStatusCode(), upHttpStatusLine.getReasonPhrase()
-                    ));
-                }
-            }
+            WebDAV.uploadData(
+                    OpenCommerceAPI.auth(
+                            httpClient,
+                            hostname,
+                            bmCredentials,
+                            ocCredentials
+                    ),
+                    httpClient,
+                    hostname,
+                    dataZip,
+                    archiveName
+            );
 
             logger.println(" + Ok");
             /* Uploading data */
@@ -1400,467 +1315,46 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println(String.format("[+] Importing data (%s.zip)", archiveName));
 
-            List<NameValuePair> oaHttpPostParams = new ArrayList<>();
-            oaHttpPostParams.add(new BasicNameValuePair(
-                    "grant_type", "urn:demandware:params:oauth:grant-type:client-id:dwsid:dwsecuretoken"
-            ));
-
-            RequestBuilder oaRequestBuilder = RequestBuilder.create("POST");
-            oaRequestBuilder.setHeader("Authorization", ocAuthHeaderValue);
-            oaRequestBuilder.setEntity(new UrlEncodedFormEntity(oaHttpPostParams, Consts.UTF_8));
-            oaRequestBuilder.setUri(String.format(
-                    "https://%s/dw/oauth2/access_token?client_id=%s",
-                    hostname, URLEncoder.encode(ocCredentials.getClientId(), "UTF-8")
-            ));
-
-            CloseableHttpResponse oaHttpResponse;
-
-            try {
-                oaHttpResponse = httpClient.execute(oaRequestBuilder.build());
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            String oaHttpEntityString;
-
-            try {
-                oaHttpEntityString = EntityUtils.toString(oaHttpResponse.getEntity(), "UTF-8");
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            try {
-                oaHttpResponse.close();
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            JsonElement oaJsonElement;
-
-            try {
-                JsonParser oaJsonParser = new JsonParser();
-                oaJsonElement = oaJsonParser.parse(oaHttpEntityString);
-            } catch (JsonParseException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while parsing OCAPI JSON response!\nResponse=%s\n%s",
-                        oaHttpEntityString,
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            StatusLine oaHttpStatusLine = oaHttpResponse.getStatusLine();
-
-            if (oaHttpStatusLine.getStatusCode() != HttpStatus.SC_OK) {
-                logger.println();
-                throw new AbortException(String.format(
-                        "Failed to authenticate with OCAPI! %s - %s!\nResponse=%s",
-                        oaHttpStatusLine.getStatusCode(),
-                        oaHttpStatusLine.getReasonPhrase(),
-                        oaHttpEntityString
-                ));
-            }
-
-            if (!oaJsonElement.isJsonObject()) {
-                logger.println();
-                throw new AbortException(String.format(
-                        "Failed to parse OCAPI JSON response!\nResponse=%s",
-                        oaHttpEntityString
-                ));
-            }
-
-            JsonObject oaJsonObject = oaJsonElement.getAsJsonObject();
-            Boolean oaValidJson = Stream.of("access_token", "token_type").allMatch(oaJsonObject::has);
-
-            if (!oaValidJson) {
-                logger.println();
-                throw new AbortException(String.format(
-                        "Failed to parse OCAPI JSON response!\nResponse=%s",
-                        oaHttpEntityString
-                ));
-            }
-
-            JsonElement oaJsonTokenType = oaJsonObject.get("token_type");
-            JsonElement oaJsonAccessToken = oaJsonObject.get("access_token");
-
-            RequestBuilder rjRequestBuilder = RequestBuilder.create("POST");
-            rjRequestBuilder.setHeader("Authorization", String.format(
-                    "%s %s",
-                    oaJsonTokenType.getAsString(),
-                    oaJsonAccessToken.getAsString()
-            ));
-
-            JsonObject rjRequestJson = new JsonObject();
-            rjRequestJson.addProperty("file_name", String.format("%s.zip", archiveName));
-            rjRequestJson.addProperty("mode", "merge");
-            rjRequestBuilder.setEntity(new StringEntity(rjRequestJson.toString(), ContentType.APPLICATION_JSON));
-
-            rjRequestBuilder.setUri(String.format(
-                    "https://%s/s/-/dw/data/%s/jobs/sfcc-site-archive-import/executions?client_id=%s",
+            Map<String, String> executeSiteArchiveImportJobResult = OpenCommerceAPI.executeSiteArchiveImportJob(
+                    OpenCommerceAPI.auth(
+                            httpClient,
+                            hostname,
+                            bmCredentials,
+                            ocCredentials
+                    ),
+                    httpClient,
                     hostname,
-                    URLEncoder.encode(ocVersion, "UTF-8"),
-                    URLEncoder.encode(ocCredentials.getClientId(), "UTF-8")
-            ));
+                    ocVersion,
+                    archiveName,
+                    ocCredentials
+            );
 
-            CloseableHttpResponse rjHttpResponse;
+            logger.println(String.format(" - %s", executeSiteArchiveImportJobResult.get("execution_status")));
 
-            try {
-                rjHttpResponse = httpClient.execute(rjRequestBuilder.build());
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
 
-            String rjHttpEntityString;
-
-            try {
-                rjHttpEntityString = EntityUtils.toString(rjHttpResponse.getEntity(), "UTF-8");
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            try {
-                rjHttpResponse.close();
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while making HTTP request!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            JsonElement rjJsonElement;
-
-            try {
-                JsonParser rjJsonParser = new JsonParser();
-                rjJsonElement = rjJsonParser.parse(rjHttpEntityString);
-            } catch (JsonParseException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while parsing OCAPI JSON response!\nResponse=%s\n%s",
-                        rjHttpEntityString,
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            StatusLine rjHttpStatusLine = rjHttpResponse.getStatusLine();
-
-            if (!Arrays.asList(HttpStatus.SC_OK, HttpStatus.SC_ACCEPTED).contains(rjHttpStatusLine.getStatusCode())) {
-                logger.println();
-                throw new AbortException(String.format(
-                        "Failed to execute OCAPI data import job! %s - %s!\nResponse=%s",
-                        rjHttpStatusLine.getStatusCode(),
-                        rjHttpStatusLine.getReasonPhrase(),
-                        rjHttpEntityString
-                ));
-            }
-
-            if (!rjJsonElement.isJsonObject()) {
-                logger.println();
-                throw new AbortException(String.format(
-                        "Failed to parse OCAPI execute data import job JSON response!\nResponse=%s",
-                        rjHttpEntityString
-                ));
-            }
-
-            JsonObject rjJsonObject = rjJsonElement.getAsJsonObject();
-            if (!rjJsonObject.has("id")) {
-                logger.println();
-                throw new AbortException(String.format(
-                        "Failed to parse OCAPI execute data import job JSON response!\nResponse=%s",
-                        rjHttpEntityString
-                ));
-            }
-
-            JsonElement rjJsonExecutionStatus = rjJsonObject.get("execution_status");
-            String rjExecutionStatus = rjJsonExecutionStatus.getAsString();
-
-            logger.println(String.format(" - %s", rjExecutionStatus));
-
-            JsonElement rjJsonJobId = rjJsonObject.get("id");
-            String rjJobId = rjJsonJobId.getAsString();
-
-            Boolean keepRunning = true;
+            boolean keepRunning = true;
             while (keepRunning) {
                 TimeUnit.MINUTES.sleep(1);
 
-                List<NameValuePair> jaHttpPostParams = new ArrayList<>();
-                jaHttpPostParams.add(new BasicNameValuePair(
-                        "grant_type", "urn:demandware:params:oauth:grant-type:client-id:dwsid:dwsecuretoken"
-                ));
-
-                RequestBuilder jaRequestBuilder = RequestBuilder.create("POST");
-                jaRequestBuilder.setHeader("Authorization", ocAuthHeaderValue);
-                jaRequestBuilder.setEntity(new UrlEncodedFormEntity(jaHttpPostParams, Consts.UTF_8));
-                jaRequestBuilder.setUri(String.format(
-                        "https://%s/dw/oauth2/access_token?client_id=%s",
-                        hostname, URLEncoder.encode(ocCredentials.getClientId(), "UTF-8")
-                ));
-
-                CloseableHttpResponse jaHttpResponse;
-
-                try {
-                    jaHttpResponse = httpClient.execute(jaRequestBuilder.build());
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                String jaHttpEntityString;
-
-                try {
-                    jaHttpEntityString = EntityUtils.toString(jaHttpResponse.getEntity(), "UTF-8");
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    jaHttpResponse.close();
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                JsonElement jaJsonElement;
-
-                try {
-                    JsonParser jaJsonParser = new JsonParser();
-                    jaJsonElement = jaJsonParser.parse(jaHttpEntityString);
-                } catch (JsonParseException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while parsing OCAPI JSON response!\nResponse=%s\n%s",
-                            jaHttpEntityString,
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                StatusLine jaHttpStatusLine = jaHttpResponse.getStatusLine();
-
-                if (jaHttpStatusLine.getStatusCode() != HttpStatus.SC_OK) {
-                    logger.println();
-                    throw new AbortException(String.format(
-                            "Failed to authenticate with OCAPI! %s - %s!\nResponse=%s",
-                            jaHttpStatusLine.getStatusCode(),
-                            jaHttpStatusLine.getReasonPhrase(),
-                            jaHttpEntityString
-                    ));
-                }
-
-                if (!jaJsonElement.isJsonObject()) {
-                    logger.println();
-                    throw new AbortException(String.format(
-                            "Failed to parse OCAPI JSON response!\nResponse=%s",
-                            jaHttpEntityString
-                    ));
-                }
-
-                JsonObject jaJsonObject = jaJsonElement.getAsJsonObject();
-                Boolean jaValidJson = Stream.of("access_token", "token_type").allMatch(jaJsonObject::has);
-
-                if (!jaValidJson) {
-                    logger.println();
-                    throw new AbortException(String.format(
-                            "Failed to parse OCAPI JSON response!\nResponse=%s",
-                            jaHttpEntityString
-                    ));
-                }
-
-                JsonElement jaJsonTokenType = jaJsonObject.get("token_type");
-                JsonElement jaJsonAccessToken = jaJsonObject.get("access_token");
-
-                RequestBuilder jsRequestBuilder = RequestBuilder.create("GET");
-                jsRequestBuilder.setHeader("Authorization", String.format(
-                        "%s %s",
-                        jaJsonTokenType.getAsString(),
-                        jaJsonAccessToken.getAsString()
-                ));
-
-                jsRequestBuilder.setUri(String.format(
-                        "https://%s/s/-/dw/data/%s/jobs/sfcc-site-archive-import/executions/%s?client_id=%s",
+                Map<String, String> checkSiteArchiveImportJobResult = OpenCommerceAPI.checkSiteArchiveImportJob(
+                        OpenCommerceAPI.auth(
+                                httpClient,
+                                hostname,
+                                bmCredentials,
+                                ocCredentials
+                        ),
+                        httpClient,
                         hostname,
-                        URLEncoder.encode(ocVersion, "UTF-8"),
-                        URLEncoder.encode(rjJobId, "UTF-8"),
-                        URLEncoder.encode(ocCredentials.getClientId(), "UTF-8")
-                ));
+                        ocVersion,
+                        archiveName,
+                        executeSiteArchiveImportJobResult.get("id"),
+                        ocCredentials
+                );
 
-                CloseableHttpResponse jsHttpResponse;
+                logger.println(String.format(" - %s", checkSiteArchiveImportJobResult.get("execution_status")));
 
-                try {
-                    jsHttpResponse = httpClient.execute(jsRequestBuilder.build());
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                String jsHttpEntityString;
-
-                try {
-                    jsHttpEntityString = EntityUtils.toString(jsHttpResponse.getEntity(), "UTF-8");
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    jsHttpResponse.close();
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                JsonElement jsJsonElement;
-
-                try {
-                    JsonParser jsJsonParser = new JsonParser();
-                    jsJsonElement = jsJsonParser.parse(jsHttpEntityString);
-                } catch (JsonParseException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while parsing OCAPI JSON response!\nResponse=%s\n%s",
-                            jsHttpEntityString,
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                StatusLine jsHttpStatusLine = jsHttpResponse.getStatusLine();
-
-                if (jsHttpStatusLine.getStatusCode() != HttpStatus.SC_OK) {
-                    logger.println();
-                    throw new AbortException(String.format(
-                            "Failed to get OCAPI data import job status! %s - %s!\nResponse=%s",
-                            jsHttpStatusLine.getStatusCode(),
-                            jsHttpStatusLine.getReasonPhrase(),
-                            jsHttpEntityString
-                    ));
-                }
-
-                if (!jsJsonElement.isJsonObject()) {
-                    logger.println();
-                    throw new AbortException(String.format(
-                            "Failed to parse OCAPI get data import job JSON response!\nResponse=%s",
-                            jsHttpEntityString
-                    ));
-                }
-
-                JsonObject jsJsonObject = jsJsonElement.getAsJsonObject();
-                if (!jsJsonObject.has("execution_status")) {
-                    logger.println();
-                    throw new AbortException(String.format(
-                            "Failed to parse OCAPI get data import job JSON response!\nResponse=%s",
-                            jsHttpEntityString
-                    ));
-                }
-
-                JsonElement jsJsonExecutionStatus = jsJsonObject.get("execution_status");
-                String jsExecutionStatus = jsJsonExecutionStatus.getAsString();
-
-                logger.println(String.format(" - %s", jsExecutionStatus));
-
-                if (StringUtils.equalsIgnoreCase(jsExecutionStatus, "finished")) {
+                if (StringUtils.equalsIgnoreCase(checkSiteArchiveImportJobResult.get("execution_status"), "finished")) {
                     keepRunning = false;
-
-                    if (!jsJsonObject.has("exit_status")) {
-                        logger.println();
-                        throw new AbortException(String.format(
-                                "Failed to parse OCAPI get data import job JSON response!\nResponse=%s",
-                                jsHttpEntityString
-                        ));
-                    }
-
-                    JsonElement exitStatusElement = jsJsonObject.get("exit_status");
-
-                    if (!exitStatusElement.isJsonObject()) {
-                        logger.println();
-                        throw new AbortException(String.format(
-                                "Failed to parse OCAPI get data import job JSON response!\nResponse=%s",
-                                jsHttpEntityString
-                        ));
-                    }
-
-                    JsonObject exitStatusObject = exitStatusElement.getAsJsonObject();
-
-                    JsonElement exitStatusStatusElement = exitStatusObject.get("status");
-                    String exitStatusStatus = exitStatusStatusElement.getAsString();
-
-                    if (!StringUtils.equalsIgnoreCase(exitStatusStatus, "ok")) {
-                        logger.println();
-                        throw new AbortException(String.format(
-                                "Failed to import %s.zip!\nResponse=%s",
-                                archiveName,
-                                jsHttpEntityString
-                        ));
-                    }
                 }
             }
 
@@ -1873,54 +1367,19 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println("[+] Cleaning up leftover data from current data import");
 
             for (String rmPath : Arrays.asList(archiveName, String.format("%s.zip", archiveName))) {
-                RequestBuilder rmRequestBuilder = RequestBuilder.create("DELETE");
-                rmRequestBuilder.setHeader("Authorization", bmAuthHeaderValue);
-                rmRequestBuilder.setUri(String.format(
-                        "https://%s/on/demandware.servlet/webdav/Sites/Impex/src/instance/%s",
-                        hostname, rmPath
-                ));
+                WebDAV.cleanupLeftoverData(
+                        OpenCommerceAPI.auth(
+                                httpClient,
+                                hostname,
+                                bmCredentials,
+                                ocCredentials
+                        ),
+                        httpClient,
+                        hostname,
+                        rmPath
+                );
 
-                CloseableHttpResponse rmHttpResponse;
-
-                try {
-                    rmHttpResponse = httpClient.execute(rmRequestBuilder.build());
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    rmHttpResponse.close();
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while making HTTP request!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                StatusLine rmHttpStatusLine = rmHttpResponse.getStatusLine();
-
-                if (rmHttpStatusLine.getStatusCode() != HttpStatus.SC_NOT_FOUND) {
-                    if (rmHttpStatusLine.getStatusCode() == HttpStatus.SC_UNAUTHORIZED) {
-                        logger.println();
-                        throw new AbortException("Invalid username or password!");
-                    } else if (rmHttpStatusLine.getStatusCode() == HttpStatus.SC_NO_CONTENT) {
-                        logger.println(String.format(" - %s", rmPath));
-                    } else {
-                        logger.println();
-                        throw new AbortException(String.format(
-                                "%s - %s!", rmHttpStatusLine.getStatusCode(), rmHttpStatusLine.getReasonPhrase()
-                        ));
-                    }
-                }
+                logger.println(String.format(" - %s", rmPath));
             }
 
             logger.println(" + Ok");
