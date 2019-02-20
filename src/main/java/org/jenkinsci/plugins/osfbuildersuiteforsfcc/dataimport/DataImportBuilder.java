@@ -1329,11 +1329,11 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                     ocCredentials
             );
 
-            logger.println(String.format(" - %s", executeSiteArchiveImportJobResult.get("execution_status")));
+            String executionId = executeSiteArchiveImportJobResult.get("id");
+            String executionStatus = executeSiteArchiveImportJobResult.get("execution_status");
+            logger.println(String.format(" - %s", executionStatus));
 
-
-            boolean keepRunning = true;
-            while (keepRunning) {
+            while (!StringUtils.equalsIgnoreCase(executionStatus, "finished")) {
                 TimeUnit.MINUTES.sleep(1);
 
                 Map<String, String> checkSiteArchiveImportJobResult = OpenCommerceAPI.checkSiteArchiveImportJob(
@@ -1347,15 +1347,12 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                         hostname,
                         ocVersion,
                         archiveName,
-                        executeSiteArchiveImportJobResult.get("id"),
+                        executionId,
                         ocCredentials
                 );
 
-                logger.println(String.format(" - %s", checkSiteArchiveImportJobResult.get("execution_status")));
-
-                if (StringUtils.equalsIgnoreCase(checkSiteArchiveImportJobResult.get("execution_status"), "finished")) {
-                    keepRunning = false;
-                }
+                executionStatus = checkSiteArchiveImportJobResult.get("execution_status");
+                logger.println(String.format(" - %s", executionStatus));
             }
 
             logger.println(" + Ok");
