@@ -9,35 +9,11 @@
 
     <f:section title="OSF Builder Suite For Salesforce Commerce Cloud :: Data Import (HTTP Proxy Settings)">
         <f:entry
-            title="HTTP Proxy Host"
-            field="httpProxyHost"
-            help="/plugin/osf-builder-suite-for-sfcc-data-import/help/globalConfig-httpProxyHost.html">
+            title="HTTP Proxy Credentials"
+            field="httpProxyCredentialsId"
+            help="/plugin/osf-builder-suite-for-sfcc-deploy/help/globalConfig-httpProxyCredentialsId.html">
 
-            <f:textbox />
-        </f:entry>
-
-        <f:entry
-            title="HTTP Proxy Port"
-            field="httpProxyPort"
-            help="/plugin/osf-builder-suite-for-sfcc-data-import/help/globalConfig-httpProxyPort.html">
-
-            <f:textbox />
-        </f:entry>
-
-        <f:entry
-            title="HTTP Proxy Username"
-            field="httpProxyUsername"
-            help="/plugin/osf-builder-suite-for-sfcc-data-import/help/globalConfig-httpProxyUsername.html">
-
-            <f:textbox />
-        </f:entry>
-
-        <f:entry
-            title="HTTP Proxy Password"
-            field="httpProxyPassword"
-            help="/plugin/osf-builder-suite-for-sfcc-data-import/help/globalConfig-httpProxyPassword.html">
-
-            <f:password />
+            <c:select />
         </f:entry>
     </f:section>
 
