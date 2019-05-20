@@ -3,4 +3,25 @@
     <br>
     <br>
     For example: &quot;<tt>scm/my-git-repo/metadata</tt>&quot;
+    <br>
+    <br>
+    <ul>
+        <li>
+            If no include and no exclude patterns are setup then all files in the source path defined here
+            will be included
+        </li>
+        <li>
+            If include patterns are defined while no exclude patterns are defined then only the files matching the
+            include patterns will be included
+        </li>
+        <li>
+            If include patterns are not defined while exclude patterns are defined then all files in the source
+            path defined here will be included with the exception of those matching the exclude patterns
+        </li>
+        <li>
+            If both include patterns and exclude patterns are defined then only the files matching the
+            include patterns and not matching the exclude patterns will be included
+        </li>
+
+    </ul>
 </div>

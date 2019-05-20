@@ -65,6 +65,17 @@
     </f:entry>
 
     <f:entry
+        title="Include Patterns"
+        help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-includePatterns.html">
+
+        <f:repeatableProperty field="includePatterns">
+            <div align="right">
+                <f:repeatableDeleteButton />
+            </div>
+        </f:repeatableProperty>
+    </f:entry>
+
+    <f:entry
         title="Exclude Patterns"
         help="/plugin/osf-builder-suite-for-sfcc-data-import/help/projectConfig-excludePatterns.html">
 

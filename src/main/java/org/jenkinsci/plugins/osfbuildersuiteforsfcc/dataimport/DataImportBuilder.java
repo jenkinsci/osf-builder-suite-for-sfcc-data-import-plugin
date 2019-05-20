@@ -51,6 +51,7 @@ import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.BusinessManagerA
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.model.DataImportAction;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.model.DataImportEnvAction;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.repeatable.ExcludePattern;
+import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.repeatable.IncludePattern;
 import org.jenkinsci.plugins.tokenmacro.MacroEvaluationException;
 import org.jenkinsci.plugins.tokenmacro.TokenMacro;
 import org.kohsuke.stapler.*;
@@ -84,6 +85,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
     private String ocVersion;
     private String archiveName;
     private String sourcePath;
+    private List<IncludePattern> includePatterns;
     private List<ExcludePattern> excludePatterns;
     private String importStrategy;
     private String tempDirectory;
@@ -97,6 +99,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             String ocVersion,
             String archiveName,
             String sourcePath,
+            List<IncludePattern> includePatterns,
             List<ExcludePattern> excludePatterns,
             String importStrategy,
             String tempDirectory) {
@@ -108,6 +111,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         this.ocVersion = ocVersion;
         this.archiveName = archiveName;
         this.sourcePath = sourcePath;
+        this.includePatterns = includePatterns;
         this.excludePatterns = excludePatterns;
         this.importStrategy = importStrategy;
         this.tempDirectory = tempDirectory;
@@ -188,6 +192,17 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
     @DataBoundSetter
     public void setSourcePath(String sourcePath) {
         this.sourcePath = sourcePath;
+    }
+
+    @SuppressWarnings("unused")
+    public List<IncludePattern> getIncludePatterns() {
+        return includePatterns;
+    }
+
+    @SuppressWarnings("unused")
+    @DataBoundSetter
+    public void setIncludePatterns(List<IncludePattern> includePatterns) {
+        this.includePatterns = includePatterns;
     }
 
     @SuppressWarnings("unused")
@@ -315,7 +330,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         }
 
         DataImportResult dataImportResult = workspace.act(new DataImportCallable(
-                workspace,
                 listener,
                 expandedHostname,
                 bmCredentialsId,
@@ -327,6 +341,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 ocVersion,
                 expandedArchiveName,
                 sourcePath,
+                includePatterns,
                 excludePatterns,
                 importStrategy,
                 tempDirectory,
@@ -543,7 +558,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
         private static final long serialVersionUID = 1L;
 
-        private final FilePath workspace;
         private final TaskListener listener;
         private final String hostname;
         private final String bmCredentialsId;
@@ -555,6 +569,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         private final String ocVersion;
         private final String archiveName;
         private final String sourcePath;
+        private final List<IncludePattern> includePatterns;
         private final List<ExcludePattern> excludePatterns;
         private final String importStrategy;
         private final String tempDirectory;
@@ -564,7 +579,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
         @SuppressWarnings("WeakerAccess")
         public DataImportCallable(
-                FilePath workspace,
                 TaskListener listener,
                 String hostname,
                 String bmCredentialsId,
@@ -576,6 +590,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 String ocVersion,
                 String archiveName,
                 String sourcePath,
+                List<IncludePattern> includePatterns,
                 List<ExcludePattern> excludePatterns,
                 String importStrategy,
                 String tempDirectory,
@@ -583,7 +598,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 Boolean disableSSLValidation,
                 List<String> previousDataFingerprints) {
 
-            this.workspace = workspace;
             this.listener = listener;
             this.hostname = hostname;
             this.bmCredentialsId = bmCredentialsId;
@@ -595,6 +609,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             this.ocVersion = ocVersion;
             this.archiveName = archiveName;
             this.sourcePath = sourcePath;
+            this.includePatterns = includePatterns;
             this.excludePatterns = excludePatterns;
             this.importStrategy = importStrategy;
             this.tempDirectory = tempDirectory;
@@ -813,6 +828,16 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 );
             }
 
+            List<MatchPattern> includePatternsList = new ArrayList<>();
+            if (includePatterns != null) {
+                includePatternsList.addAll(includePatterns.stream()
+                        .map(IncludePattern::getIncludePattern)
+                        .filter(StringUtils::isNotEmpty)
+                        .map((p) -> MatchPattern.fromString("%ant[" + File.separator + p + "]"))
+                        .collect(Collectors.toList())
+                );
+            }
+
             List<MatchPattern> excludePatternsList = new ArrayList<>();
             if (excludePatterns != null) {
                 excludePatternsList.addAll(excludePatterns.stream()
@@ -827,9 +852,23 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             List<String> currentDataZipFiles = new ArrayList<>();
 
             ZipUtil.pack(dataSrc, dataZip, (path) -> {
-                boolean excludeFile = excludePatternsList.stream().anyMatch(
-                        (pattern) -> pattern.matchPath(File.separator + path, true)
-                );
+                boolean includeFile = true;
+                if (!includePatternsList.isEmpty()) {
+                    includeFile = includePatternsList.stream().anyMatch(
+                            (pattern) -> pattern.matchPath(File.separator + path, true)
+                    );
+                }
+
+                if (!includeFile) {
+                    return null;
+                }
+
+                boolean excludeFile = false;
+                if (!excludePatternsList.isEmpty()) {
+                    excludeFile = excludePatternsList.stream().anyMatch(
+                            (pattern) -> pattern.matchPath(File.separator + path, true)
+                    );
+                }
 
                 if (excludeFile) {
                     return null;
