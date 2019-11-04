@@ -16,7 +16,7 @@
 
     <name>OSF Builder Suite For Salesforce Commerce Cloud :: Data Import</name>
     <description>Import your site data to a Salesforce Commerce Cloud instance</description>
-    <url>https://wiki.jenkins.io/display/JENKINS/OSF+Builder+Suite+For+Salesforce+Commerce+Cloud+Data+Import+Plugin</url>
+    <url>https://github.com/jenkinsci/osf-builder-suite-for-sfcc-data-import-plugin</url>
 
     <developers>
         <developer>
