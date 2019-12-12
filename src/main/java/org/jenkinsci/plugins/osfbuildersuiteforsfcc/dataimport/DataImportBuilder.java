@@ -5,13 +5,19 @@ import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.cloudbees.plugins.credentials.common.StandardCredentials;
 import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
 import com.cloudbees.plugins.credentials.domains.URIRequirementBuilder;
-import hudson.*;
-import hudson.model.*;
+import hudson.AbortException;
+import hudson.Extension;
+import hudson.FilePath;
+import hudson.Launcher;
+import hudson.model.AbstractProject;
+import hudson.model.Item;
+import hudson.model.Run;
+import hudson.model.TaskListener;
 import hudson.model.queue.Tasks;
 import hudson.remoting.VirtualChannel;
 import hudson.security.ACL;
-import hudson.tasks.Builder;
 import hudson.tasks.BuildStepDescriptor;
+import hudson.tasks.Builder;
 import hudson.util.ListBoxModel;
 import jenkins.MasterToSlaveFileCallable;
 import jenkins.model.Jenkins;
@@ -20,34 +26,12 @@ import net.sf.json.JSONObject;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.apache.http.*;
-import org.apache.http.Header;
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.NTCredentials;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.entity.GzipDecompressingEntity;
-import org.apache.http.config.ConnectionConfig;
-import org.apache.http.conn.ssl.NoopHostnameVerifier;
-import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
-import org.apache.http.conn.ssl.TrustStrategy;
-import org.apache.http.impl.client.*;
-import org.apache.http.ssl.SSLContextBuilder;
-import org.apache.http.ssl.SSLContexts;
-import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
-import org.bouncycastle.cert.X509CertificateHolder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.openssl.PEMKeyPair;
-import org.bouncycastle.openssl.PEMParser;
 import org.codehaus.plexus.util.MatchPattern;
 import org.jenkinsci.Symbol;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.HTTPProxyCredentials;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.OpenCommerceAPICredentials;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.TwoFactorAuthCredentials;
-import org.jenkinsci.plugins.osfbuildersuiteforsfcc.credentials.BusinessManagerAuthCredentials;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.model.DataImportAction;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.model.DataImportEnvAction;
 import org.jenkinsci.plugins.osfbuildersuiteforsfcc.dataimport.repeatable.ExcludePattern;
@@ -58,17 +42,12 @@ import org.kohsuke.stapler.*;
 import org.zeroturnaround.zip.ZipUtil;
 
 import javax.annotation.Nonnull;
-import javax.net.ssl.SSLContext;
 import java.io.*;
-import java.nio.file.*;
-import java.security.*;
-import java.security.cert.CertificateException;
-import java.security.cert.CertificateExpiredException;
-import java.security.cert.CertificateNotYetValidException;
-import java.security.cert.X509Certificate;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.util.*;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -79,7 +58,6 @@ import java.util.stream.Collectors;
 public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
     private String hostname;
-    private String bmCredentialsId;
     private String tfCredentialsId;
     private String ocCredentialsId;
     private String ocVersion;
@@ -93,7 +71,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
     @DataBoundConstructor
     public DataImportBuilder(
             String hostname,
-            String bmCredentialsId,
             String tfCredentialsId,
             String ocCredentialsId,
             String ocVersion,
@@ -105,7 +82,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             String tempDirectory) {
 
         this.hostname = hostname;
-        this.bmCredentialsId = bmCredentialsId;
         this.tfCredentialsId = tfCredentialsId;
         this.ocCredentialsId = ocCredentialsId;
         this.ocVersion = ocVersion;
@@ -126,17 +102,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
     @DataBoundSetter
     public void setHostname(String hostname) {
         this.hostname = hostname;
-    }
-
-    @SuppressWarnings("unused")
-    public String getBmCredentialsId() {
-        return bmCredentialsId;
-    }
-
-    @SuppressWarnings("unused")
-    @DataBoundSetter
-    public void setBmCredentialsId(String bmCredentialsId) {
-        this.bmCredentialsId = StringUtils.trim(bmCredentialsId);
     }
 
     @SuppressWarnings("unused")
@@ -260,19 +225,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             throw abortException;
         }
 
-        BusinessManagerAuthCredentials bmCredentials = null;
-        if (StringUtils.isNotEmpty(bmCredentialsId)) {
-            bmCredentials = com.cloudbees.plugins.credentials.CredentialsProvider.findCredentialById(
-                    bmCredentialsId,
-                    BusinessManagerAuthCredentials.class,
-                    build, URIRequirementBuilder.create().build()
-            );
-        }
-
-        if (bmCredentials != null) {
-            com.cloudbees.plugins.credentials.CredentialsProvider.track(build, bmCredentials);
-        }
-
         TwoFactorAuthCredentials tfCredentials = null;
         if (StringUtils.isNotEmpty(tfCredentialsId)) {
             tfCredentials = com.cloudbees.plugins.credentials.CredentialsProvider.findCredentialById(
@@ -332,8 +284,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         DataImportResult dataImportResult = workspace.act(new DataImportCallable(
                 listener,
                 expandedHostname,
-                bmCredentialsId,
-                bmCredentials,
                 tfCredentialsId,
                 tfCredentials,
                 ocCredentialsId,
@@ -382,38 +332,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
         public boolean isApplicable(Class<? extends AbstractProject> jobType) {
             return true;
-        }
-
-        @SuppressWarnings("unused")
-        public ListBoxModel doFillBmCredentialsIdItems(
-                @AncestorInPath Item item,
-                @QueryParameter String credentialsId) {
-
-            StandardListBoxModel result = new StandardListBoxModel();
-
-            if (item == null) {
-                if (!Jenkins.get().hasPermission(Jenkins.ADMINISTER)) {
-                    return result.includeCurrentValue(credentialsId);
-                }
-            } else {
-                if (!item.hasPermission(Item.EXTENDED_READ)
-                        && !item.hasPermission(CredentialsProvider.USE_ITEM)) {
-                    return result.includeCurrentValue(credentialsId);
-                }
-            }
-
-            return result
-                    .includeEmptyValue()
-                    .includeMatchingAs(
-                            item instanceof hudson.model.Queue.Task
-                                    ? Tasks.getAuthenticationOf((hudson.model.Queue.Task) item)
-                                    : ACL.SYSTEM,
-                            item,
-                            StandardCredentials.class,
-                            URIRequirementBuilder.create().build(),
-                            CredentialsMatchers.instanceOf(BusinessManagerAuthCredentials.class)
-                    )
-                    .includeCurrentValue(credentialsId);
         }
 
         @SuppressWarnings("unused")
@@ -528,7 +446,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             return httpProxyCredentialsId;
         }
 
-        @SuppressWarnings({"unused"})
+        @SuppressWarnings("unused")
         public void setHttpProxyCredentialsId(String httpProxyCredentialsId) {
             this.httpProxyCredentialsId = httpProxyCredentialsId;
         }
@@ -538,7 +456,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             return disableSSLValidation;
         }
 
-        @SuppressWarnings({"WeakerAccess", "unused"})
+        @SuppressWarnings("unused")
         public void setDisableSSLValidation(Boolean disableSSLValidation) {
             this.disableSSLValidation = disableSSLValidation;
         }
@@ -560,8 +478,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
         private final TaskListener listener;
         private final String hostname;
-        private final String bmCredentialsId;
-        private final BusinessManagerAuthCredentials bmCredentials;
         private final String tfCredentialsId;
         private final TwoFactorAuthCredentials tfCredentials;
         private final String ocCredentialsId;
@@ -581,8 +497,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
         public DataImportCallable(
                 TaskListener listener,
                 String hostname,
-                String bmCredentialsId,
-                BusinessManagerAuthCredentials bmCredentials,
                 String tfCredentialsId,
                 TwoFactorAuthCredentials tfCredentials,
                 String ocCredentialsId,
@@ -600,8 +514,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
 
             this.listener = listener;
             this.hostname = hostname;
-            this.bmCredentialsId = bmCredentialsId;
-            this.bmCredentials = bmCredentials;
             this.tfCredentialsId = tfCredentialsId;
             this.tfCredentials = tfCredentials;
             this.ocCredentialsId = ocCredentialsId;
@@ -618,7 +530,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             this.previousDataFingerprints = previousDataFingerprints;
         }
 
-        @SuppressWarnings("ConstantConditions")
         @Override
         public DataImportResult invoke(File dir, VirtualChannel channel) throws IOException, InterruptedException {
             PrintStream logger = listener.getLogger();
@@ -628,22 +539,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
                 throw new AbortException(
                         "Missing value for \"Instance Hostname\"!" + " " +
                                 "What are we going to do with all the data if we don't have where to push it?"
-                );
-            }
-
-            if (StringUtils.isEmpty(bmCredentialsId)) {
-                logger.println();
-                throw new AbortException(
-                        "Missing \"Business Manager Credentials\"!" + " " +
-                                "We can't push the data without proper credentials, can't we?"
-                );
-            }
-
-            if (bmCredentials == null) {
-                logger.println();
-                throw new AbortException(
-                        "Failed to load \"Business Manager Credentials\"!" + " " +
-                                "Something's wrong but not sure who's blame it is..."
                 );
             }
 
@@ -935,419 +830,21 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             }
             /* Checking if data import is needed */
 
-
-            /* Setup HTTP Client */
-            HttpClientBuilder httpClientBuilder = HttpClients.custom();
-            httpClientBuilder.setUserAgent("Jenkins (OSF Builder Suite For Salesforce Commerce Cloud :: Data Import)");
-            httpClientBuilder.setDefaultCookieStore(new BasicCookieStore());
-
-            httpClientBuilder.addInterceptorFirst((HttpRequestInterceptor) (request, context) -> {
-                if (!request.containsHeader("Accept-Encoding")) {
-                    request.addHeader("Accept-Encoding", "gzip");
-                }
-            });
-
-            httpClientBuilder.addInterceptorFirst((HttpResponseInterceptor) (response, context) -> {
-                HttpEntity entity = response.getEntity();
-                if (entity != null) {
-                    Header header = entity.getContentEncoding();
-                    if (header != null) {
-                        for (HeaderElement headerElement : header.getElements()) {
-                            if (headerElement.getName().equalsIgnoreCase("gzip")) {
-                                response.setEntity(new GzipDecompressingEntity(response.getEntity()));
-                                return;
-                            }
-                        }
-                    }
-                }
-            });
-
-            httpClientBuilder.setDefaultConnectionConfig(ConnectionConfig.custom()
-                    .setBufferSize(5242880 /* 5 MegaBytes */)
-                    .setFragmentSizeHint(5242880 /* 5 MegaBytes */)
-                    .build()
+            OpenCommerceAPI openCommerceAPI = new OpenCommerceAPI(
+                    hostname,
+                    httpProxyCredentials,
+                    disableSSLValidation,
+                    tfCredentials,
+                    ocCredentials,
+                    ocVersion
             );
-
-            httpClientBuilder.setDefaultRequestConfig(RequestConfig.custom()
-                    .setSocketTimeout(300000 /* 5 minutes */)
-                    .setConnectTimeout(300000 /* 5 minutes */)
-                    .setConnectionRequestTimeout(300000 /* 5 minutes */)
-                    .build()
-            );
-
-            org.apache.http.client.CredentialsProvider httpCredentialsProvider = new BasicCredentialsProvider();
-
-            // Proxy Auth
-            if (httpProxyCredentials != null) {
-                String httpProxyHost = httpProxyCredentials.getHost();
-                String httpProxyPort = httpProxyCredentials.getPort();
-                String httpProxyUsername = httpProxyCredentials.getUsername();
-                String httpProxyPassword = httpProxyCredentials.getPassword().getPlainText();
-
-                int httpProxyPortInteger;
-
-                try {
-                    httpProxyPortInteger = Integer.parseInt(httpProxyPort);
-                } catch (NumberFormatException e) {
-                    logger.println();
-                    throw new AbortException(
-                            String.format("Invalid value \"%s\" for HTTP proxy port!", httpProxyPort) + " " +
-                                    "Please enter a valid port number."
-                    );
-                }
-
-                if (httpProxyPortInteger <= 0 || httpProxyPortInteger > 65535) {
-                    logger.println();
-                    throw new AbortException(
-                            String.format("Invalid value \"%s\" for HTTP proxy port!", httpProxyPort) + " " +
-                                    "Please enter a valid port number."
-                    );
-                }
-
-                HttpHost httpClientProxy = new HttpHost(httpProxyHost, httpProxyPortInteger);
-                httpClientBuilder.setProxy(httpClientProxy);
-
-                if (StringUtils.isNotEmpty(httpProxyUsername) && StringUtils.isNotEmpty(httpProxyPassword)) {
-                    if (httpProxyUsername.contains("\\")) {
-                        String domain = httpProxyUsername.substring(0, httpProxyUsername.indexOf("\\"));
-                        String user = httpProxyUsername.substring(httpProxyUsername.indexOf("\\") + 1);
-
-                        httpCredentialsProvider.setCredentials(
-                                new AuthScope(httpProxyHost, httpProxyPortInteger),
-                                new NTCredentials(user, httpProxyPassword, "", domain)
-                        );
-                    } else {
-                        httpCredentialsProvider.setCredentials(
-                                new AuthScope(httpProxyHost, httpProxyPortInteger),
-                                new UsernamePasswordCredentials(httpProxyUsername, httpProxyPassword)
-                        );
-                    }
-                }
-            }
-
-            httpClientBuilder.setDefaultCredentialsProvider(httpCredentialsProvider);
-
-            SSLContextBuilder sslContextBuilder = SSLContexts.custom();
-
-            if (tfCredentials != null) {
-                Provider bouncyCastleProvider = new BouncyCastleProvider();
-
-                // Server Certificate
-                Reader serverCertificateReader = new StringReader(tfCredentials.getServerCertificate());
-                PEMParser serverCertificateParser = new PEMParser(serverCertificateReader);
-
-                JcaX509CertificateConverter serverCertificateConverter = new JcaX509CertificateConverter();
-                serverCertificateConverter.setProvider(bouncyCastleProvider);
-
-                X509Certificate serverCertificate;
-
-                try {
-                    serverCertificate = serverCertificateConverter.getCertificate(
-                            (X509CertificateHolder) serverCertificateParser.readObject()
-                    );
-                } catch (CertificateException | IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while loading two factor auth server certificate!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    serverCertificate.checkValidity();
-                } catch (CertificateExpiredException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "The server certificate used for two factor auth is expired!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                } catch (CertificateNotYetValidException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "The server certificate used for two factor auth is not yet valid!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                // Client Certificate
-                Reader clientCertificateReader = new StringReader(tfCredentials.getClientCertificate());
-                PEMParser clientCertificateParser = new PEMParser(clientCertificateReader);
-
-                JcaX509CertificateConverter clientCertificateConverter = new JcaX509CertificateConverter();
-                clientCertificateConverter.setProvider(bouncyCastleProvider);
-
-                X509Certificate clientCertificate;
-
-                try {
-                    clientCertificate = clientCertificateConverter.getCertificate(
-                            (X509CertificateHolder) clientCertificateParser.readObject()
-                    );
-                } catch (CertificateException | IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while loading two factor auth client certificate!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    clientCertificate.checkValidity();
-                } catch (CertificateExpiredException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "The client certificate used for two factor auth is expired!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                } catch (CertificateNotYetValidException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "The client certificate used for two factor auth is not yet valid!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                // Client Private Key
-                Reader clientPrivateKeyReader = new StringReader(tfCredentials.getClientPrivateKey());
-                PEMParser clientPrivateKeyParser = new PEMParser(clientPrivateKeyReader);
-
-                Object clientPrivateKeyObject;
-
-                try {
-                    clientPrivateKeyObject = clientPrivateKeyParser.readObject();
-                } catch (IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while loading two factor auth client private key!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                PrivateKeyInfo clientPrivateKeyInfo;
-
-                if (clientPrivateKeyObject instanceof PrivateKeyInfo) {
-                    clientPrivateKeyInfo = (PrivateKeyInfo) clientPrivateKeyObject;
-                } else if (clientPrivateKeyObject instanceof PEMKeyPair) {
-                    clientPrivateKeyInfo = ((PEMKeyPair) clientPrivateKeyObject).getPrivateKeyInfo();
-                } else {
-                    logger.println();
-                    throw new AbortException("Failed to load two factor auth client private key!");
-                }
-
-                // Trust Store
-                KeyStore customTrustStore;
-
-                try {
-                    customTrustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-                } catch (KeyStoreException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom trust store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    customTrustStore.load(null, null);
-                } catch (IOException | NoSuchAlgorithmException | CertificateException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom trust store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    customTrustStore.setCertificateEntry(hostname, serverCertificate);
-                } catch (KeyStoreException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom trust store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    sslContextBuilder.loadTrustMaterial(customTrustStore, null);
-                } catch (NoSuchAlgorithmException | KeyStoreException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom trust store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                // Key Store
-                KeyFactory customKeyStoreKeyFactory;
-
-                try {
-                    customKeyStoreKeyFactory = KeyFactory.getInstance("RSA");
-                } catch (NoSuchAlgorithmException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom key store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                PrivateKey customKeyStorePrivateKey;
-
-                try {
-                    customKeyStorePrivateKey = customKeyStoreKeyFactory.generatePrivate(
-                            new PKCS8EncodedKeySpec(clientPrivateKeyInfo.getEncoded())
-                    );
-                } catch (InvalidKeySpecException | IOException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom key store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                KeyStore customKeyStore;
-
-                try {
-                    customKeyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-                } catch (KeyStoreException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom key store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    customKeyStore.load(null, null);
-                } catch (IOException | NoSuchAlgorithmException | CertificateException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom key store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                char[] keyStorePassword = RandomStringUtils.randomAscii(32).toCharArray();
-
-                try {
-                    customKeyStore.setKeyEntry(
-                            hostname, customKeyStorePrivateKey, keyStorePassword,
-                            new X509Certificate[]{clientCertificate, serverCertificate}
-                    );
-                } catch (KeyStoreException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom key store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-
-                try {
-                    sslContextBuilder.loadKeyMaterial(customKeyStore, keyStorePassword);
-                } catch (NoSuchAlgorithmException | KeyStoreException | UnrecoverableKeyException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom key store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-            }
-
-            if (disableSSLValidation != null && disableSSLValidation) {
-                try {
-                    sslContextBuilder.loadTrustMaterial(null, (TrustStrategy) (arg0, arg1) -> true);
-                } catch (NoSuchAlgorithmException | KeyStoreException e) {
-                    logger.println();
-                    AbortException abortException = new AbortException(String.format(
-                            "Exception thrown while setting up the custom key store!\n%s",
-                            ExceptionUtils.getStackTrace(e)
-                    ));
-                    abortException.initCause(e);
-                    throw abortException;
-                }
-            }
-
-            SSLContext customSSLContext;
-
-            try {
-                customSSLContext = sslContextBuilder.build();
-            } catch (NoSuchAlgorithmException | KeyManagementException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while creating custom SSL context!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-
-            if (disableSSLValidation != null && disableSSLValidation) {
-                httpClientBuilder.setSSLSocketFactory(
-                        new SSLConnectionSocketFactory(
-                                customSSLContext, NoopHostnameVerifier.INSTANCE
-                        )
-                );
-            } else {
-                httpClientBuilder.setSSLSocketFactory(
-                        new SSLConnectionSocketFactory(
-                                customSSLContext, SSLConnectionSocketFactory.getDefaultHostnameVerifier()
-                        )
-                );
-            }
-
-            CloseableHttpClient httpClient = httpClientBuilder.build();
-            /* Setup HTTP Client */
-
 
             /* Cleaning up leftover data from previous data import */
             logger.println();
             logger.println("[+] Cleaning up leftover data from previous data import");
 
             for (String rmPath : Arrays.asList(archiveName, String.format("%s.zip", archiveName))) {
-                WebDAV.cleanupLeftoverData(
-                        OpenCommerceAPI.auth(
-                                httpClient,
-                                hostname,
-                                bmCredentials,
-                                ocCredentials
-                        ),
-                        httpClient,
-                        hostname,
-                        rmPath
-                );
-
+                openCommerceAPI.cleanupLeftoverData(rmPath);
                 logger.println(String.format(" - %s", rmPath));
             }
 
@@ -1359,18 +856,7 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println(String.format("[+] Uploading data (%s.zip)", archiveName));
 
-            WebDAV.uploadData(
-                    OpenCommerceAPI.auth(
-                            httpClient,
-                            hostname,
-                            bmCredentials,
-                            ocCredentials
-                    ),
-                    httpClient,
-                    hostname,
-                    dataZip,
-                    archiveName
-            );
+            openCommerceAPI.uploadData(dataZip, archiveName);
 
             logger.println(" + Ok");
             /* Uploading data */
@@ -1380,44 +866,19 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println(String.format("[+] Importing data (%s.zip)", archiveName));
 
-            Map<String, String> executeSiteArchiveImportJobResult = OpenCommerceAPI.executeSiteArchiveImportJob(
-                    OpenCommerceAPI.auth(
-                            httpClient,
-                            hostname,
-                            bmCredentials,
-                            ocCredentials
-                    ),
-                    httpClient,
-                    hostname,
-                    ocVersion,
-                    archiveName,
-                    ocCredentials
-            );
+            OpenCommerceAPI.JobExecutionResult impJobResult = openCommerceAPI.executeSiteArchiveImportJob(archiveName);
+            logger.println(String.format(" - %s", impJobResult.getStatus()));
 
-            String executionId = executeSiteArchiveImportJobResult.get("id");
-            String executionStatus = executeSiteArchiveImportJobResult.get("execution_status");
-            logger.println(String.format(" - %s", executionStatus));
-
-            while (!StringUtils.equalsIgnoreCase(executionStatus, "finished")) {
+            String currentExecutionStatus = impJobResult.getStatus();
+            while (!StringUtils.equalsIgnoreCase(currentExecutionStatus, "finished")) {
                 TimeUnit.MINUTES.sleep(1);
-
-                Map<String, String> checkSiteArchiveImportJobResult = OpenCommerceAPI.checkSiteArchiveImportJob(
-                        OpenCommerceAPI.auth(
-                                httpClient,
-                                hostname,
-                                bmCredentials,
-                                ocCredentials
-                        ),
-                        httpClient,
-                        hostname,
-                        ocVersion,
+                OpenCommerceAPI.JobExecutionResult chkJobResult = openCommerceAPI.checkSiteArchiveImportJob(
                         archiveName,
-                        executionId,
-                        ocCredentials
+                        impJobResult.getId()
                 );
 
-                executionStatus = checkSiteArchiveImportJobResult.get("execution_status");
-                logger.println(String.format(" - %s", executionStatus));
+                currentExecutionStatus = chkJobResult.getStatus();
+                logger.println(String.format(" - %s", currentExecutionStatus));
             }
 
             logger.println(" + Ok");
@@ -1429,40 +890,14 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println("[+] Cleaning up leftover data from current data import");
 
             for (String rmPath : Arrays.asList(archiveName, String.format("%s.zip", archiveName))) {
-                WebDAV.cleanupLeftoverData(
-                        OpenCommerceAPI.auth(
-                                httpClient,
-                                hostname,
-                                bmCredentials,
-                                ocCredentials
-                        ),
-                        httpClient,
-                        hostname,
-                        rmPath
-                );
-
+                openCommerceAPI.cleanupLeftoverData(rmPath);
                 logger.println(String.format(" - %s", rmPath));
             }
 
             logger.println(" + Ok");
             /* Cleaning up leftover data from current data import */
 
-
-            /* Close HTTP Client */
-            try {
-                httpClient.close();
-            } catch (IOException e) {
-                logger.println();
-                AbortException abortException = new AbortException(String.format(
-                        "Exception thrown while closing HTTP client!\n%s",
-                        ExceptionUtils.getStackTrace(e)
-                ));
-                abortException.initCause(e);
-                throw abortException;
-            }
-            /* Close HTTP Client */
-
-
+            openCommerceAPI.close();
             return new DataImportResult(currentDataFingerprints, "IMPORTED");
         }
     }
