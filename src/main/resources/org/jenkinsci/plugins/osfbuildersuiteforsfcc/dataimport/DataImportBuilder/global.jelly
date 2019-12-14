@@ -12,7 +12,7 @@
         <f:entry
             title="HTTP Proxy Credentials"
             field="httpProxyCredentialsId"
-            help="/plugin/osf-builder-suite-for-sfcc-deploy/help/globalConfig-httpProxyCredentialsId.html">
+            help="/plugin/osf-builder-suite-for-sfcc-data-import/help/globalConfig-httpProxyCredentialsId.html">
 
             <c:select />
         </f:entry>
