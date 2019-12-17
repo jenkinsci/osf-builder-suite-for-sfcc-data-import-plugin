@@ -897,7 +897,6 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println(" + Ok");
             /* Cleaning up leftover data from current data import */
 
-            openCommerceAPI.close();
             return new DataImportResult(currentDataFingerprints, "IMPORTED");
         }
     }

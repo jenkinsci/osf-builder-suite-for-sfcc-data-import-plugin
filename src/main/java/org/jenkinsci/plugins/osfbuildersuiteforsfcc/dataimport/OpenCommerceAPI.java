@@ -12,6 +12,7 @@ import org.apache.http.*;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.NTCredentials;
 import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.entity.GzipDecompressingEntity;
 import org.apache.http.client.entity.UrlEncodedFormEntity;
@@ -57,14 +58,15 @@ import java.util.stream.Stream;
 
 class OpenCommerceAPI {
     private String hostname;
+    private HTTPProxyCredentials httpProxyCredentials;
+    private Boolean disableSSLValidation;
+    private TwoFactorAuthCredentials tfCredentials;
     private OpenCommerceAPICredentials ocCredentials;
     private String ocVersion;
 
     private String cacheAuthType;
     private String cacheAuthToken;
     private Long cacheAuthExpire;
-
-    private CloseableHttpClient httpClient;
 
     OpenCommerceAPI(
             String hostname,
@@ -75,14 +77,18 @@ class OpenCommerceAPI {
             String ocVersion) throws IOException {
 
         this.hostname = hostname;
+        this.httpProxyCredentials = httpProxyCredentials;
+        this.disableSSLValidation = disableSSLValidation;
+        this.tfCredentials = tfCredentials;
         this.ocCredentials = ocCredentials;
         this.ocVersion = ocVersion;
 
         this.cacheAuthType = "";
         this.cacheAuthToken = "";
         this.cacheAuthExpire = 0L;
+    }
 
-        /* Setup HTTP Client */
+    private CloseableHttpClient getCloseableHttpClient() throws AbortException {
         HttpClientBuilder httpClientBuilder = HttpClients.custom();
         httpClientBuilder.setUserAgent("Jenkins (OSF Builder Suite For Salesforce Commerce Cloud)");
         httpClientBuilder.setDefaultCookieStore(new BasicCookieStore());
@@ -121,7 +127,97 @@ class OpenCommerceAPI {
                 .build()
         );
 
-        org.apache.http.client.CredentialsProvider httpCredentialsProvider = new BasicCredentialsProvider();
+        // Proxy Auth
+        if (httpProxyCredentials != null) {
+            String httpProxyHost = httpProxyCredentials.getHost();
+            String httpProxyPort = httpProxyCredentials.getPort();
+            String httpProxyUsername = httpProxyCredentials.getUsername();
+            String httpProxyPassword = httpProxyCredentials.getPassword().getPlainText();
+
+            int httpProxyPortInteger;
+
+            try {
+                httpProxyPortInteger = Integer.parseInt(httpProxyPort);
+            } catch (NumberFormatException e) {
+                throw new AbortException(
+                        String.format("Invalid value \"%s\" for HTTP proxy port!", httpProxyPort) + " " +
+                                "Please enter a valid port number."
+                );
+            }
+
+            if (httpProxyPortInteger <= 0 || httpProxyPortInteger > 65535) {
+                throw new AbortException(
+                        String.format("Invalid value \"%s\" for HTTP proxy port!", httpProxyPort) + " " +
+                                "Please enter a valid port number."
+                );
+            }
+
+            HttpHost httpClientProxy = new HttpHost(httpProxyHost, httpProxyPortInteger);
+            httpClientBuilder.setProxy(httpClientProxy);
+
+            CredentialsProvider httpCredentialsProvider = new BasicCredentialsProvider();
+
+            if (StringUtils.isNotEmpty(httpProxyUsername) && StringUtils.isNotEmpty(httpProxyPassword)) {
+                if (httpProxyUsername.contains("\\")) {
+                    String domain = httpProxyUsername.substring(0, httpProxyUsername.indexOf("\\"));
+                    String user = httpProxyUsername.substring(httpProxyUsername.indexOf("\\") + 1);
+
+                    httpCredentialsProvider.setCredentials(
+                            new AuthScope(httpProxyHost, httpProxyPortInteger),
+                            new NTCredentials(user, httpProxyPassword, "", domain)
+                    );
+                } else {
+                    httpCredentialsProvider.setCredentials(
+                            new AuthScope(httpProxyHost, httpProxyPortInteger),
+                            new UsernamePasswordCredentials(httpProxyUsername, httpProxyPassword)
+                    );
+                }
+            }
+
+            httpClientBuilder.setDefaultCredentialsProvider(httpCredentialsProvider);
+        }
+
+        return httpClientBuilder.build();
+    }
+
+    private CloseableHttpClient getCloseableHttpClientWithTwoFactorAuth() throws AbortException {
+        HttpClientBuilder httpClientBuilder = HttpClients.custom();
+        httpClientBuilder.setUserAgent("Jenkins (OSF Builder Suite For Salesforce Commerce Cloud)");
+        httpClientBuilder.setDefaultCookieStore(new BasicCookieStore());
+
+        httpClientBuilder.addInterceptorFirst((HttpRequestInterceptor) (request, context) -> {
+            if (!request.containsHeader("Accept-Encoding")) {
+                request.addHeader("Accept-Encoding", "gzip");
+            }
+        });
+
+        httpClientBuilder.addInterceptorFirst((HttpResponseInterceptor) (response, context) -> {
+            HttpEntity entity = response.getEntity();
+            if (entity != null) {
+                Header header = entity.getContentEncoding();
+                if (header != null) {
+                    for (HeaderElement headerElement : header.getElements()) {
+                        if (headerElement.getName().equalsIgnoreCase("gzip")) {
+                            response.setEntity(new GzipDecompressingEntity(response.getEntity()));
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        httpClientBuilder.setDefaultConnectionConfig(ConnectionConfig.custom()
+                .setBufferSize(5242880 /* 5 MegaBytes */)
+                .setFragmentSizeHint(5242880 /* 5 MegaBytes */)
+                .build()
+        );
+
+        httpClientBuilder.setDefaultRequestConfig(RequestConfig.custom()
+                .setSocketTimeout(300000 /* 5 minutes */)
+                .setConnectTimeout(300000 /* 5 minutes */)
+                .setConnectionRequestTimeout(300000 /* 5 minutes */)
+                .build()
+        );
 
         // Proxy Auth
         if (httpProxyCredentials != null) {
@@ -151,6 +247,8 @@ class OpenCommerceAPI {
             HttpHost httpClientProxy = new HttpHost(httpProxyHost, httpProxyPortInteger);
             httpClientBuilder.setProxy(httpClientProxy);
 
+            CredentialsProvider httpCredentialsProvider = new BasicCredentialsProvider();
+
             if (StringUtils.isNotEmpty(httpProxyUsername) && StringUtils.isNotEmpty(httpProxyPassword)) {
                 if (httpProxyUsername.contains("\\")) {
                     String domain = httpProxyUsername.substring(0, httpProxyUsername.indexOf("\\"));
@@ -167,9 +265,9 @@ class OpenCommerceAPI {
                     );
                 }
             }
-        }
 
-        httpClientBuilder.setDefaultCredentialsProvider(httpCredentialsProvider);
+            httpClientBuilder.setDefaultCredentialsProvider(httpCredentialsProvider);
+        }
 
         SSLContextBuilder sslContextBuilder = SSLContexts.custom();
 
@@ -451,8 +549,7 @@ class OpenCommerceAPI {
             );
         }
 
-        httpClient = httpClientBuilder.build();
-        /* Setup HTTP Client */
+        return httpClientBuilder.build();
     }
 
     private AuthResponse auth() throws IOException {
@@ -479,6 +576,7 @@ class OpenCommerceAPI {
         requestBuilder.setUri("https://account.demandware.com/dwsso/oauth2/access_token");
         requestBuilder.setEntity(new UrlEncodedFormEntity(httpPostParams, Consts.UTF_8));
 
+        CloseableHttpClient httpClient = getCloseableHttpClient();
         CloseableHttpResponse httpResponse;
 
         try {
@@ -510,6 +608,17 @@ class OpenCommerceAPI {
         } catch (IOException e) {
             AbortException abortException = new AbortException(String.format(
                     "Exception thrown while making HTTP request!\n%s",
+                    ExceptionUtils.getStackTrace(e)
+            ));
+            abortException.initCause(e);
+            throw abortException;
+        }
+
+        try {
+            httpClient.close();
+        } catch (IOException e) {
+            AbortException abortException = new AbortException(String.format(
+                    "Exception thrown while closing HTTP client!\n%s",
                     ExceptionUtils.getStackTrace(e)
             ));
             abortException.initCause(e);
@@ -586,6 +695,7 @@ class OpenCommerceAPI {
                 URLEncoder.encode(path, "UTF-8")
         ));
 
+        CloseableHttpClient httpClient = getCloseableHttpClientWithTwoFactorAuth();
         CloseableHttpResponse httpResponse;
 
         try {
@@ -604,6 +714,17 @@ class OpenCommerceAPI {
         } catch (IOException e) {
             AbortException abortException = new AbortException(String.format(
                     "Exception thrown while making HTTP request!\n%s",
+                    ExceptionUtils.getStackTrace(e)
+            ));
+            abortException.initCause(e);
+            throw abortException;
+        }
+
+        try {
+            httpClient.close();
+        } catch (IOException e) {
+            AbortException abortException = new AbortException(String.format(
+                    "Exception thrown while closing HTTP client!\n%s",
                     ExceptionUtils.getStackTrace(e)
             ));
             abortException.initCause(e);
@@ -636,6 +757,7 @@ class OpenCommerceAPI {
                 URLEncoder.encode(archiveName, "UTF-8")
         ));
 
+        CloseableHttpClient httpClient = getCloseableHttpClientWithTwoFactorAuth();
         CloseableHttpResponse httpResponse;
 
         try {
@@ -654,6 +776,17 @@ class OpenCommerceAPI {
         } catch (IOException e) {
             AbortException abortException = new AbortException(String.format(
                     "Exception thrown while making HTTP request!\n%s",
+                    ExceptionUtils.getStackTrace(e)
+            ));
+            abortException.initCause(e);
+            throw abortException;
+        }
+
+        try {
+            httpClient.close();
+        } catch (IOException e) {
+            AbortException abortException = new AbortException(String.format(
+                    "Exception thrown while closing HTTP client!\n%s",
                     ExceptionUtils.getStackTrace(e)
             ));
             abortException.initCause(e);
@@ -691,6 +824,7 @@ class OpenCommerceAPI {
                 URLEncoder.encode(ocCredentials.getClientId(), "UTF-8")
         ));
 
+        CloseableHttpClient httpClient = getCloseableHttpClientWithTwoFactorAuth();
         CloseableHttpResponse httpResponse;
 
         try {
@@ -722,6 +856,17 @@ class OpenCommerceAPI {
         } catch (IOException e) {
             AbortException abortException = new AbortException(String.format(
                     "Exception thrown while making HTTP request!\n%s",
+                    ExceptionUtils.getStackTrace(e)
+            ));
+            abortException.initCause(e);
+            throw abortException;
+        }
+
+        try {
+            httpClient.close();
+        } catch (IOException e) {
+            AbortException abortException = new AbortException(String.format(
+                    "Exception thrown while closing HTTP client!\n%s",
                     ExceptionUtils.getStackTrace(e)
             ));
             abortException.initCause(e);
@@ -794,6 +939,7 @@ class OpenCommerceAPI {
                 URLEncoder.encode(ocCredentials.getClientId(), "UTF-8")
         ));
 
+        CloseableHttpClient httpClient = getCloseableHttpClientWithTwoFactorAuth();
         CloseableHttpResponse httpResponse;
 
         try {
@@ -825,6 +971,17 @@ class OpenCommerceAPI {
         } catch (IOException e) {
             AbortException abortException = new AbortException(String.format(
                     "Exception thrown while making HTTP request!\n%s",
+                    ExceptionUtils.getStackTrace(e)
+            ));
+            abortException.initCause(e);
+            throw abortException;
+        }
+
+        try {
+            httpClient.close();
+        } catch (IOException e) {
+            AbortException abortException = new AbortException(String.format(
+                    "Exception thrown while closing HTTP client!\n%s",
                     ExceptionUtils.getStackTrace(e)
             ));
             abortException.initCause(e);
@@ -908,21 +1065,6 @@ class OpenCommerceAPI {
 
         String jobStatus = jsonObject.get("execution_status").getAsString();
         return new JobExecutionResult(jobId, jobStatus);
-    }
-
-    void close() throws IOException {
-        /* Close HTTP Client */
-        try {
-            httpClient.close();
-        } catch (IOException e) {
-            AbortException abortException = new AbortException(String.format(
-                    "Exception thrown while closing HTTP client!\n%s",
-                    ExceptionUtils.getStackTrace(e)
-            ));
-            abortException.initCause(e);
-            throw abortException;
-        }
-        /* Close HTTP Client */
     }
 
     private static final class AuthResponse {
