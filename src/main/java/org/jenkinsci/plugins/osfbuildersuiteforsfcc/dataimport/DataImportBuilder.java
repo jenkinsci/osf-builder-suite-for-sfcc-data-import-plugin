@@ -889,6 +889,10 @@ public class DataImportBuilder extends Builder implements SimpleBuildStep {
             logger.println();
             logger.println("[+] Cleaning up leftover data from current data import");
 
+            // Give some more time to SFCC servers to unlock the files as sometimes if we attempt to delete them
+            // immediately it will fail.
+            TimeUnit.MINUTES.sleep(1);
+
             for (String rmPath : Arrays.asList(archiveName, String.format("%s.zip", archiveName))) {
                 openCommerceAPI.cleanupLeftoverData(rmPath);
                 logger.println(String.format(" - %s", rmPath));
