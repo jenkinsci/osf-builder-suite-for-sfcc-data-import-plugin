@@ -640,8 +640,7 @@ class OpenCommerceAPI {
         JsonElement jsonElement;
 
         try {
-            JsonParser jsonParser = new JsonParser();
-            jsonElement = jsonParser.parse(httpEntityString);
+            jsonElement = JsonParser.parseString(httpEntityString);
         } catch (JsonParseException e) {
             AbortException abortException = new AbortException(String.format(
                     "Exception thrown while parsing OCAPI JSON response!\nResponse=%s\n%s",
@@ -733,6 +732,12 @@ class OpenCommerceAPI {
         }
 
         StatusLine httpStatusLine = httpResponse.getStatusLine();
+
+        // Sometimes SFCC can't delete the whole folder at once and it will delete it partially and return
+        // 207 http code and try to finish deleting the rest of the files in the background
+        if (httpStatusLine.getStatusCode() == HttpStatus.SC_MULTI_STATUS) {
+            return;
+        }
 
         if (!Arrays.asList(HttpStatus.SC_NOT_FOUND, HttpStatus.SC_NO_CONTENT).contains(httpStatusLine.getStatusCode())) {
             throw new AbortException(String.format(
