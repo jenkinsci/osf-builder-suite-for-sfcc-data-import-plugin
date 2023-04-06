@@ -640,7 +640,8 @@ class OpenCommerceAPI {
         JsonElement jsonElement;
 
         try {
-            jsonElement = JsonParser.parseString(httpEntityString);
+            JsonParser jsonParser = new JsonParser();
+            jsonElement = jsonParser.parse(httpEntityString);
         } catch (JsonParseException e) {
             AbortException abortException = new AbortException(String.format(
                     "Exception thrown while parsing OCAPI JSON response!\nResponse=%s\n%s",
